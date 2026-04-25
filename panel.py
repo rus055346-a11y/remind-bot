@@ -354,14 +354,17 @@ async function sendRemind(event, row, level) {
   btn.textContent = '...';
   btn.disabled = true;
   const r = await fetch('/api/remind/'+row+'?level='+level, {method:'POST'});
-  if (r.ok) {
+  let data = {};
+  try { data = await r.json(); } catch (e) {}
+  if (r.ok && data.status === 'ok') {
     showToast('📤 Напоминание #'+level+' отправлено!');
   } else {
-    showToast('❌ Ошибка отправки');
+    const err = String(data.error || 'неизвестная ошибка').slice(0, 220);
+    showToast('❌ Не отправилось: ' + err);
     btn.textContent = orig;
     btn.disabled = false;
   }
-  setTimeout(load, 1000);
+  setTimeout(load, 1500);
 }
 
 function showToast(msg) {
@@ -883,13 +886,30 @@ def store_outgoing_message(phone, text):
     ])
 
 def send_whatsapp(phone, message):
+    """Отправить сообщение через Green API.
+    Возвращает (success: bool, info: str) — НЕ замалчивает ошибки.
+    """
+    if not phone or not str(phone).strip():
+        return False, "пустой телефон"
     url = f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE}/sendMessage/{GREEN_API_TOKEN}"
-    data = {"chatId": f"{phone}@c.us", "message": message}
+    data = {"chatId": f"{str(phone).strip()}@c.us", "message": message}
     try:
-        requests.post(url, json=data, timeout=10)
-        print(f"WhatsApp sent → {phone}")
+        resp = requests.post(url, json=data, timeout=15)
     except Exception as e:
-        print(f"WhatsApp error: {e}")
+        log.error(f"WhatsApp EXCEPTION → {phone}: {e}")
+        return False, f"сетевая ошибка: {e}"
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {"raw": resp.text}
+    if resp.status_code != 200:
+        log.error(f"WhatsApp FAIL {resp.status_code} → {phone}: {payload}")
+        return False, f"HTTP {resp.status_code}: {payload}"
+    if not payload.get("idMessage"):
+        log.error(f"WhatsApp NO idMessage → {phone}: {payload}")
+        return False, f"Green API не вернул idMessage: {payload}"
+    log.info(f"WhatsApp OK → {phone}: idMessage={payload['idMessage']}")
+    return True, payload["idMessage"]
 
 def reschedule(row_index):
     sheet = get_sheet()
@@ -1133,14 +1153,16 @@ def chat_send(phone):
     data = request.get_json(silent=True) or {}
     text = (data.get('text') or '').strip()
     if not text:
-        return jsonify({"status": "error", "error": "empty text"}), 400
-    send_whatsapp(phone, text)
+        return jsonify({"status": "error", "error": "пустой текст"}), 400
+    ok, info = send_whatsapp(phone, text)
+    if not ok:
+        return jsonify({"status": "error", "error": info, "phone": phone}), 502
     try:
         store_outgoing_message(phone, text)
     except Exception as e:
         log.error(f"store_outgoing_message failed: {e}")
-        return jsonify({"status": "sent", "logged": False, "error": str(e)})
-    return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "logged": False, "warn": f"отправлено, но не записалось в лог: {e}"})
+    return jsonify({"status": "ok", "idMessage": info})
 
 @app.route('/api/messages/dismiss/<int:msg_row>', methods=['POST'])
 @login_required
@@ -1183,13 +1205,16 @@ def send_remind(row):
     sheet = get_sheet()
     r = sheet.row_values(row)
     if len(r) < 2 or not r[1]:
-        return jsonify({"status": "error", "error": "phone not found"}), 400
+        return jsonify({"status": "error", "error": "у клиента не указан телефон"}), 400
     phone = r[1]
-    send_whatsapp(phone, REMINDER_MESSAGES[level])
+    ok, info = send_whatsapp(phone, REMINDER_MESSAGES[level])
+    if not ok:
+        log.error(f"Manual remind level={level} FAIL → {phone} (row {row}): {info}")
+        return jsonify({"status": "error", "error": info, "phone": phone}), 502
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     sheet.update_cell(row, 6, now)
-    log.info(f"Manual remind level={level} → {phone} (row {row})")
-    return jsonify({"status": "ok", "level": level})
+    log.info(f"Manual remind level={level} OK → {phone} (row {row})")
+    return jsonify({"status": "ok", "level": level, "idMessage": info})
 
 @app.route('/webhook', methods=['GET'])
 def webhook_check():

@@ -57,13 +57,25 @@ def get_messages_sheet(book=None):
 # ---------- WhatsApp ----------
 
 def send_whatsapp(phone, message):
+    """Возвращает (success: bool, info: str). Не замалчивает ошибки Green API."""
+    if not phone:
+        return False, "пустой телефон"
     url = f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE}/sendMessage/{GREEN_API_TOKEN}"
-    data = {"chatId": f"{phone}@c.us", "message": message}
+    data = {"chatId": f"{str(phone).strip()}@c.us", "message": message}
     try:
-        response = requests.post(url, json=data, timeout=10)
-        print(f"  OK -> {phone}: {response.json()}")
+        resp = requests.post(url, json=data, timeout=15)
     except Exception as e:
-        print(f"  ERROR -> {phone}: {e}")
+        print(f"  EXCEPTION -> {phone}: {e}")
+        return False, str(e)
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {"raw": resp.text}
+    if resp.status_code != 200 or not payload.get("idMessage"):
+        print(f"  FAIL {resp.status_code} -> {phone}: {payload}")
+        return False, f"HTTP {resp.status_code}: {payload}"
+    print(f"  OK -> {phone}: idMessage={payload['idMessage']}")
+    return True, payload["idMessage"]
 
 # ---------- Логика «клиент ответил сегодня?» ----------
 
@@ -125,9 +137,12 @@ def send_reminders(mode):
 
         if mode == "first":
             print(f"-> 1-е: {row[0]} ({phone})")
-            send_whatsapp(phone, REMINDER_MESSAGES["first"])
-            sheet.update_cell(i, 6, now)
-            sent += 1
+            ok, info = send_whatsapp(phone, REMINDER_MESSAGES["first"])
+            if ok:
+                sheet.update_cell(i, 6, now)
+                sent += 1
+            else:
+                print(f"   НЕ отправлено: {info}")
 
         elif mode == "second":
             # 2-е шлём только если клиент ничего не написал сегодня
@@ -141,9 +156,12 @@ def send_reminders(mode):
                 skipped_no_first += 1
                 continue
             print(f"-> 2-е: {row[0]} ({phone})")
-            send_whatsapp(phone, REMINDER_MESSAGES["second"])
-            sheet.update_cell(i, 6, now)
-            sent += 1
+            ok, info = send_whatsapp(phone, REMINDER_MESSAGES["second"])
+            if ok:
+                sheet.update_cell(i, 6, now)
+                sent += 1
+            else:
+                print(f"   НЕ отправлено: {info}")
 
     print(f"\nОтправлено: {sent}")
     if mode == "second":
