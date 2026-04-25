@@ -150,6 +150,7 @@ HTML = """
 <div class="header">
   <div><h1>Оплаты</h1><div class="sub" id="updated">Загрузка...</div></div>
   <div class="header-btns">
+    <a class="refresh-btn" href="/chat" style="text-decoration:none; color:#7ab8ff; border-color:#1e3a5f;">💬 Чат</a>
     <button class="refresh-btn" onclick="load()">↻</button>
     <button class="logout-btn" onclick="location='/logout'">Выйти</button>
   </div>
@@ -523,6 +524,234 @@ setInterval(load, 60000);
 </html>
 """
 
+HTML_CHAT = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Чат с клиентами</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { font-family:'Manrope',sans-serif; background:#0a0a0a; color:#fff; min-height:100vh; padding:16px; padding-bottom:90px; }
+  .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; gap:10px; }
+  h1 { font-size:22px; font-weight:700; }
+  .sub { color:#666; font-size:12px; margin-top:2px; }
+  .header-btns { display:flex; gap:8px; }
+  .refresh-btn { background:#1a1a1a; border:1px solid #2a2a2a; color:#fff; border-radius:10px; padding:8px 14px; font-size:13px; font-weight:600; cursor:pointer; font-family:'Manrope',sans-serif; }
+  .back-btn { background:#1a1a1a; border:1px solid #2a2a2a; color:#7ab8ff; border-radius:10px; padding:8px 14px; font-size:13px; font-weight:600; cursor:pointer; text-decoration:none; display:inline-block; }
+  .search { width:100%; background:#141414; border:1px solid #222; border-radius:10px; padding:10px 14px; color:#fff; font-size:14px; font-family:'Manrope',sans-serif; margin-bottom:14px; }
+  .empty { text-align:center; padding:60px 20px; color:#444; font-size:14px; }
+  .contacts { display:flex; flex-direction:column; gap:8px; }
+  .contact { background:#141414; border:1px solid #222; border-radius:14px; padding:14px 16px; cursor:pointer; transition:background 0.15s; }
+  .contact:hover { background:#1a1a1a; }
+  .contact-top { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px; }
+  .contact-name { font-size:15px; font-weight:700; }
+  .contact-time { font-size:11px; color:#666; }
+  .contact-preview { color:#888; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+  .contact-preview.out::before { content:"↗ "; color:#44aa66; }
+
+  /* Conversation view */
+  .chat-view { display:flex; flex-direction:column; height:calc(100vh - 80px); }
+  .chat-head { display:flex; align-items:center; gap:10px; background:#141414; border:1px solid #222; border-radius:14px; padding:12px 14px; margin-bottom:12px; }
+  .chat-back { background:transparent; border:none; color:#7ab8ff; font-size:18px; font-weight:700; cursor:pointer; padding:4px 8px; }
+  .chat-name { font-size:15px; font-weight:700; }
+  .chat-phone { font-size:12px; color:#666; }
+  .chat-msgs { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:6px 2px; }
+  .bubble { max-width:85%; padding:10px 14px; border-radius:14px; font-size:14px; line-height:1.4; word-break:break-word; }
+  .bubble.in { background:#141414; border:1px solid #222; align-self:flex-start; border-top-left-radius:4px; }
+  .bubble.out { background:#13243a; border:1px solid #1e3a5f; color:#cfe1ff; align-self:flex-end; border-top-right-radius:4px; }
+  .bubble-time { display:block; font-size:10px; color:#666; margin-top:4px; }
+  .bubble-img { max-width:200px; max-height:200px; border-radius:8px; border:1px solid #222; object-fit:cover; display:block; margin-top:6px; }
+  .reply-bar { position:fixed; bottom:0; left:0; right:0; background:#0a0a0a; border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; }
+  .reply-bar textarea { flex:1; background:#141414; border:1px solid #2a2a2a; border-radius:12px; padding:10px 12px; color:#fff; font-size:14px; font-family:'Manrope',sans-serif; resize:none; max-height:120px; }
+  .send-btn { background:#44ff88; color:#000; border:none; border-radius:12px; padding:10px 18px; font-size:14px; font-weight:700; cursor:pointer; font-family:'Manrope',sans-serif; }
+  .send-btn:disabled { opacity:0.5; cursor:not-allowed; }
+  .toast { position:fixed; bottom:80px; left:50%; transform:translateX(-50%); background:#44ff88; color:#000; padding:12px 24px; border-radius:30px; font-weight:700; font-size:14px; display:none; z-index:100; }
+  .toast.show { display:block; }
+  .toast.error { background:#ff4444; color:#fff; }
+</style>
+</head>
+<body>
+
+<div id="list-view">
+  <div class="header">
+    <div><h1>Чат</h1><div class="sub" id="updated">Загрузка...</div></div>
+    <div class="header-btns">
+      <button class="refresh-btn" onclick="loadContacts()">↻</button>
+      <a class="back-btn" href="/">← На главную</a>
+    </div>
+  </div>
+  <input class="search" id="search" placeholder="Поиск по имени или номеру" oninput="renderContacts()">
+  <div class="contacts" id="contacts"><div class="empty">Загрузка...</div></div>
+</div>
+
+<div id="chat-view" class="chat-view" style="display:none;">
+  <div class="chat-head">
+    <button class="chat-back" onclick="backToList()">←</button>
+    <div>
+      <div class="chat-name" id="chat-name">—</div>
+      <div class="chat-phone" id="chat-phone">—</div>
+    </div>
+  </div>
+  <div class="chat-msgs" id="chat-msgs"><div class="empty">Загрузка...</div></div>
+  <div class="reply-bar">
+    <textarea id="reply-text" rows="1" placeholder="Сообщение..." oninput="autoResize(this)"></textarea>
+    <button class="send-btn" id="send-btn" onclick="sendReply()">Отправить</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let allContacts = [];
+let currentPhone = null;
+
+function escapeHtml(s) {
+  return String(s || '')
+    .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+    .replaceAll('"','&quot;').replaceAll("'",'&#039;');
+}
+
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.toggle('error', !!isError);
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function autoResize(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+}
+
+async function loadContacts() {
+  document.getElementById('updated').textContent = 'Обновление...';
+  const r = await fetch('/api/chat/contacts');
+  allContacts = await r.json();
+  document.getElementById('updated').textContent = 'Контактов: ' + allContacts.length;
+  renderContacts();
+}
+
+function renderContacts() {
+  const q = (document.getElementById('search').value || '').toLowerCase().trim();
+  const box = document.getElementById('contacts');
+  let items = allContacts;
+  if (q) {
+    items = items.filter(c =>
+      (c.name||'').toLowerCase().includes(q) ||
+      (c.client_name||'').toLowerCase().includes(q) ||
+      (c.phone||'').includes(q)
+    );
+  }
+  if (!items.length) { box.innerHTML = '<div class="empty">Нет контактов</div>'; return; }
+  box.innerHTML = items.map(c => {
+    const display = c.client_name || c.name || c.phone;
+    const previewClass = c.last_direction === 'out' ? 'contact-preview out' : 'contact-preview';
+    return '<div class="contact" onclick="openChat(\\''+c.phone+'\\')">' +
+      '<div class="contact-top">' +
+        '<div class="contact-name">' + escapeHtml(display) + '</div>' +
+        '<div class="contact-time">' + escapeHtml((c.last_at||'').slice(11,16)) + '</div>' +
+      '</div>' +
+      '<div class="contact-phone" style="font-size:11px;color:#666;margin-bottom:4px;">' + escapeHtml(c.phone) + '</div>' +
+      '<div class="'+previewClass+'">' + escapeHtml((c.last_text||'').slice(0,80)) + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function openChat(phone) {
+  currentPhone = phone;
+  document.getElementById('list-view').style.display = 'none';
+  document.getElementById('chat-view').style.display = 'flex';
+  await loadHistory();
+  document.getElementById('reply-text').focus();
+}
+
+function backToList() {
+  currentPhone = null;
+  document.getElementById('chat-view').style.display = 'none';
+  document.getElementById('list-view').style.display = 'block';
+  loadContacts();
+}
+
+async function loadHistory() {
+  if (!currentPhone) return;
+  const r = await fetch('/api/chat/' + encodeURIComponent(currentPhone));
+  const data = await r.json();
+  document.getElementById('chat-name').textContent = data.client_name || 'Клиент';
+  document.getElementById('chat-phone').textContent = data.phone;
+  const box = document.getElementById('chat-msgs');
+  if (!data.messages.length) {
+    box.innerHTML = '<div class="empty">Нет входящих от клиента</div>';
+    return;
+  }
+  box.innerHTML = data.messages.map(m => {
+    const cls = (m.direction === 'out') ? 'bubble out' : 'bubble in';
+    let body = '';
+    if ((m.mime_type || '').startsWith('image/') && m.file_url) {
+      if (m.message_text) body += escapeHtml(m.message_text);
+      body += '<a href="'+escapeHtml(m.file_url)+'" target="_blank" rel="noopener"><img class="bubble-img" src="'+escapeHtml(m.file_url)+'" alt="фото"></a>';
+    } else if (m.file_url) {
+      body += '📎 <a href="'+escapeHtml(m.file_url)+'" target="_blank" rel="noopener" style="color:inherit;">' + escapeHtml(m.file_name||'файл') + '</a>';
+      if (m.message_text) body += '<div style="margin-top:6px;">' + escapeHtml(m.message_text) + '</div>';
+    } else {
+      body += escapeHtml(m.message_text || '');
+    }
+    return '<div class="'+cls+'">' + body + '<span class="bubble-time">' + escapeHtml(m.created_at||'') + '</span></div>';
+  }).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendReply() {
+  const ta = document.getElementById('reply-text');
+  const btn = document.getElementById('send-btn');
+  const text = ta.value.trim();
+  if (!text || !currentPhone) return;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const r = await fetch('/api/chat/' + encodeURIComponent(currentPhone) + '/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text})
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (data.status === 'ok' || data.status === 'sent') {
+      ta.value = '';
+      autoResize(ta);
+      showToast('✓ Отправлено');
+      // Подгружаем историю чтобы увидеть наше сообщение
+      setTimeout(loadHistory, 800);
+    } else {
+      showToast('Ошибка: ' + (data.error || 'unknown'), true);
+    }
+  } catch (e) {
+    showToast('Ошибка отправки: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Отправить';
+  }
+}
+
+// Enter — отправить, Shift+Enter — перенос строки
+document.getElementById('reply-text').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendReply();
+  }
+});
+
+loadContacts();
+// Авто-обновление списка контактов и активного чата
+setInterval(() => { if (currentPhone) loadHistory(); else loadContacts(); }, 60000);
+</script>
+</body>
+</html>
+"""
+
 # ============================================================
 # УТИЛИТЫ
 # ============================================================
@@ -576,26 +805,32 @@ def get_messages_sheet():
         ws = book.worksheet("messages")
     except gspread.WorksheetNotFound:
         log.info("Лист 'messages' не найден, создаю...")
-        ws = book.add_worksheet(title="messages", rows=1000, cols=11)
+        ws = book.add_worksheet(title="messages", rows=1000, cols=12)
         ws.append_row([
             "created_at", "phone", "sender_name", "message_type",
             "message_text", "file_url", "file_name", "mime_type",
-            "chat_id", "auto_reply_sent_at", "resolved_at"
+            "chat_id", "auto_reply_sent_at", "resolved_at", "direction"
         ])
         _GS_CACHE["messages"] = ws
         return ws
-    # Ленивая миграция: если столбца resolved_at ещё нет — добавляем.
-    # ВАЖНО: сначала расширяем сетку до 11 колонок, иначе update_cell может не записать.
+    # Ленивая миграция: добавляем столбцы resolved_at и direction если их ещё нет.
     try:
         headers = ws.row_values(1)
+        needed = []
         if "resolved_at" not in headers:
-            log.info("Добавляю столбец 'resolved_at' в messages...")
+            needed.append("resolved_at")
+        if "direction" not in headers:
+            needed.append("direction")
+        if needed:
+            target_cols = len(headers) + len(needed)
             try:
-                if ws.col_count < 11:
-                    ws.resize(rows=ws.row_count, cols=11)
+                if ws.col_count < target_cols:
+                    ws.resize(rows=ws.row_count, cols=target_cols)
             except Exception as e:
                 log.warning(f"resize не сработал: {e}")
-            ws.update_cell(1, len(headers) + 1, "resolved_at")
+            for i, name in enumerate(needed):
+                log.info(f"Добавляю столбец '{name}' в messages...")
+                ws.update_cell(1, len(headers) + 1 + i, name)
     except Exception as e:
         log.warning(f"Не удалось проверить заголовки messages: {e}")
     _GS_CACHE["messages"] = ws
@@ -626,7 +861,25 @@ def store_incoming_message(
         file_name,
         mime_type,
         chat_id,
-        auto_reply_sent_at
+        auto_reply_sent_at,
+        "",      # resolved_at
+        "in"     # direction
+    ])
+
+def store_outgoing_message(phone, text):
+    """Логируем исходящее сообщение в тот же лист messages, чтобы видеть в чате полную переписку."""
+    ws = get_messages_sheet()
+    ws.append_row([
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        phone,
+        "Я",                # sender_name — наш менеджер
+        "textMessage",
+        text,
+        "", "", "",         # file_url, file_name, mime_type
+        f"{phone}@c.us",
+        "",                 # auto_reply_sent_at
+        "",                 # resolved_at
+        "out"               # direction
     ])
 
 def send_whatsapp(phone, message):
@@ -731,6 +984,11 @@ def index():
 def messages_page():
     return render_template_string(HTML_MESSAGES)
 
+@app.route('/chat')
+@login_required
+def chat_page():
+    return render_template_string(HTML_CHAT)
+
 @app.route('/api/clients')
 @login_required
 def get_clients():
@@ -795,6 +1053,94 @@ def get_messages():
 def get_all_messages():
     """Страница 'Все сообщения': весь архив, включая resolved."""
     return jsonify(_read_messages(only_unresolved=False, debtor_phones=None, limit=300))
+
+# ---------- ЧАТ ----------
+
+def _all_chat_rows():
+    """Полный сырой список строк из messages, с _row и нормализованной direction."""
+    ws = get_messages_sheet()
+    all_rows = ws.get_all_values()
+    if len(all_rows) < 2:
+        return [], []
+    headers = all_rows[0]
+    items = []
+    for i, row_data in enumerate(all_rows[1:], start=2):
+        rec = {h: (row_data[j] if j < len(row_data) else "") for j, h in enumerate(headers)}
+        # Backward-compat: в старых строках direction пустой → считаем что это входящее
+        if not rec.get("direction"):
+            rec["direction"] = "in"
+        rec["_row"] = i
+        items.append(rec)
+    return items, headers
+
+def _client_names_by_phone():
+    """{ '79161234567': 'Имя клиента' } из основного листа клиентов."""
+    sheet = get_sheet()
+    out = {}
+    for row in sheet.get_all_values()[1:]:
+        if len(row) >= 2 and row[1]:
+            out[row[1].strip()] = row[0]
+    return out
+
+@app.route('/api/chat/contacts')
+@login_required
+def chat_contacts():
+    """Список телефонов с превью последнего сообщения, отсортирован по времени по убыванию."""
+    rows, _ = _all_chat_rows()
+    by_phone = {}
+    for r in rows:
+        phone = (r.get("phone") or "").strip()
+        if not phone:
+            continue
+        ts = r.get("created_at") or ""
+        prev = by_phone.get(phone)
+        if prev is None or ts > prev["last_at"]:
+            by_phone[phone] = {
+                "phone": phone,
+                "name": r.get("sender_name") or phone,
+                "last_at": ts,
+                "last_text": r.get("message_text") or ("📎 файл" if r.get("file_url") else ""),
+                "last_direction": r.get("direction") or "in",
+            }
+    names = _client_names_by_phone()
+    items = []
+    for phone, c in by_phone.items():
+        c["client_name"] = names.get(phone, "")
+        items.append(c)
+    items.sort(key=lambda c: c["last_at"], reverse=True)
+    return jsonify(items)
+
+@app.route('/api/chat/<phone>')
+@login_required
+def chat_history(phone):
+    """Последние 3 ВХОДЯЩИХ сообщения от клиента — этого достаточно чтобы понять, что отвечать."""
+    rows, _ = _all_chat_rows()
+    items = [r for r in rows if (r.get("phone") or "").strip() == phone.strip()]
+    incoming = [r for r in items if r.get("direction") == "in"]
+    incoming.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    last3 = incoming[:3]
+    last3.sort(key=lambda r: r.get("created_at") or "")
+    return jsonify({
+        "phone": phone,
+        "client_name": _client_names_by_phone().get(phone.strip(), ""),
+        "messages": last3,
+    })
+
+@app.route('/api/chat/<phone>/send', methods=['POST'])
+@login_required
+def chat_send(phone):
+    """Отправить произвольный текст клиенту через Green API + залогировать в messages."""
+    data = request.get_json(silent=True) or {}
+    text = (data.get('text') or '').strip()
+    if not text:
+        return jsonify({"status": "error", "error": "empty text"}), 400
+    send_whatsapp(phone, text)
+    try:
+        store_outgoing_message(phone, text)
+    except Exception as e:
+        log.error(f"store_outgoing_message failed: {e}")
+        return jsonify({"status": "sent", "logged": False, "error": str(e)})
+    return jsonify({"status": "ok"})
 
 @app.route('/api/messages/dismiss/<int:msg_row>', methods=['POST'])
 @login_required
