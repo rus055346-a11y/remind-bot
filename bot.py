@@ -1,33 +1,60 @@
 # -*- coding: utf-8 -*-
+"""
+Скрипт автоматической отправки напоминаний.
+Запускается планировщиком Windows:
+  10:00 → 1-е напоминание (всем у кого сегодня оплата)
+  19:00 → 2-е напоминание (только тем, кто за день не написал ничего и не прислал чек)
+
+Использование:
+  python bot.py          # режим определяется по времени (до 14:00 — first, после — second)
+  python bot.py first    # принудительно 1-е напоминание
+  python bot.py second   # принудительно 2-е напоминание
+"""
+import sys
+import os
 import gspread
 import requests
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
+
 GREEN_API_INSTANCE = "7107599042"
 GREEN_API_TOKEN    = "1a6012c4f46348c896f3146282aa2befcdf93f6be2674957b0"
 SPREADSHEET_ID     = "16oNWO9igly5Eaff_g-qcIaADl9fwA9ul1hBX8IBvWWg"
 
-MORNING_TIME = "09:00"
-EVENING_TIME = "19:00"
+REMINDER_MESSAGES = {
+    "first": (
+        "Добрый день! Сегодня у вас оплата.\n\n"
+        "По номеру карты\n"
+        "2200 1520 4571 8817\n"
+        "Альфа-банк\n\n"
+        "Либо по платежной ссылке\n"
+        "https://pay.alfabank.ru/sc/pQtIqtQXJkuoauSF\n\n"
+        "После оплаты скиньте чек"
+    ),
+    "second": "Сегодня ждать оплату?",
+}
 
-def message_text():
-    return (
-        f"Добрый день! Сегодня у вас оплата.\n\n"
-        f"По номеру карты\n"
-        f"2200 1520 4571 8817\n"
-        f"Альфа-банк\n\n"
-        f"Либо по платежной ссылке\n"
-        f"https://pay.alfabank.ru/sc/pQtIqtQXJkuoauSF\n\n"
-        f"После оплаты скиньте чек"
-    )
+# ---------- Google Sheets ----------
 
-def get_clients():
+def _gs_book():
     scope = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).sheet1
-    return sheet.get_all_values()
+    creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=scope)
+    return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
+
+def get_sheet():
+    return _gs_book().sheet1
+
+def get_messages_sheet(book=None):
+    book = book or _gs_book()
+    try:
+        return book.worksheet("messages")
+    except gspread.WorksheetNotFound:
+        return None  # лист ещё не создан → значит входящих не было
+
+# ---------- WhatsApp ----------
 
 def send_whatsapp(phone, message):
     url = f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE}/sendMessage/{GREEN_API_TOKEN}"
@@ -38,23 +65,101 @@ def send_whatsapp(phone, message):
     except Exception as e:
         print(f"  ERROR -> {phone}: {e}")
 
-def send_reminders():
-    today = datetime.today().strftime("%Y-%m-%d")
-    print(f"Zapusk: {today}")
-    rows = get_clients()
-    print(f"Klientov: {len(rows) - 1}")
+# ---------- Логика «клиент ответил сегодня?» ----------
 
-    for row in rows[1:]:
-        if len(row) < 5:
+def get_phones_with_response_today(book):
+    """Возвращает множество телефонов, с которых сегодня было входящее сообщение."""
+    msgs = get_messages_sheet(book)
+    if msgs is None:
+        return set()
+    today_iso = datetime.today().strftime("%Y-%m-%d")
+    phones = set()
+    try:
+        all_rows = msgs.get_all_values()
+    except Exception as e:
+        print(f"  WARN: не удалось прочитать messages: {e}")
+        return set()
+    if len(all_rows) < 2:
+        return set()
+    headers = all_rows[0]
+    try:
+        ph_idx = headers.index("phone")
+        ts_idx = headers.index("created_at")
+    except ValueError:
+        return set()
+    for r in all_rows[1:]:
+        if len(r) <= max(ph_idx, ts_idx):
             continue
-        name   = row[0]
+        if r[ts_idx].startswith(today_iso) and r[ph_idx]:
+            phones.add(r[ph_idx])
+    return phones
+
+# ---------- Основной цикл ----------
+
+def send_reminders(mode):
+    today = datetime.today().strftime("%Y-%m-%d")
+    today_dm = datetime.today().strftime("%d.%m.%Y")
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    print(f"\nНапоминания [{mode}] [{today}] {now}")
+
+    book = _gs_book()
+    sheet = book.sheet1
+    rows = sheet.get_all_values()
+
+    responded = get_phones_with_response_today(book) if mode == "second" else set()
+    if mode == "second":
+        print(f"  ответили сегодня: {len(responded)} клиент(ов)")
+
+    sent = skipped_responded = skipped_no_first = 0
+
+    for i, row in enumerate(rows[1:], start=2):
+        if len(row) < 4 or not row[1]:
+            continue
         phone  = row[1]
-        amount = row[2]
         date   = row[3]
-        status = row[4]
+        status = row[4] if len(row) > 4 else "ojidanie"
+        last_sent = row[5] if len(row) > 5 else ""
 
-        if date == today and status == "ojidanie":
-            print(f"Otpravlyaem: {name} ({phone})")
-            send_whatsapp(phone, message_text())
+        if date != today or status != "ojidanie":
+            continue
 
-send_reminders()
+        if mode == "first":
+            print(f"-> 1-е: {row[0]} ({phone})")
+            send_whatsapp(phone, REMINDER_MESSAGES["first"])
+            sheet.update_cell(i, 6, now)
+            sent += 1
+
+        elif mode == "second":
+            # 2-е шлём только если клиент ничего не написал сегодня
+            # и при этом 1-е сегодня уже было отправлено (иначе нелогично)
+            if phone in responded:
+                print(f"   пропуск (ответил): {row[0]} ({phone})")
+                skipped_responded += 1
+                continue
+            if not last_sent.startswith(today_dm):
+                print(f"   пропуск (1-е сегодня не отправлялось): {row[0]} ({phone})")
+                skipped_no_first += 1
+                continue
+            print(f"-> 2-е: {row[0]} ({phone})")
+            send_whatsapp(phone, REMINDER_MESSAGES["second"])
+            sheet.update_cell(i, 6, now)
+            sent += 1
+
+    print(f"\nОтправлено: {sent}")
+    if mode == "second":
+        print(f"Пропущено (ответил): {skipped_responded}")
+        print(f"Пропущено (1-е не было): {skipped_no_first}")
+
+def detect_mode():
+    """Если режим не задан — определяем по времени суток."""
+    if len(sys.argv) > 1:
+        arg = sys.argv[1].strip().lower()
+        if arg in ("first", "1", "morning"):
+            return "first"
+        if arg in ("second", "2", "evening"):
+            return "second"
+    # авто: до 14:00 — первое, после — второе
+    return "first" if datetime.now().hour < 14 else "second"
+
+if __name__ == "__main__":
+    send_reminders(detect_mode())
