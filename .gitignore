@@ -1,0 +1,6 @@
+# Никогда не коммитим секреты
+credentials.json
+*.log
+__pycache__/
+.DS_Store
+ngrok.exe
