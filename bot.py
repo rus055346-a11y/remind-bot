@@ -14,11 +14,23 @@ import sys
 import os
 import gspread
 import requests
+import logging
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
+
+# Логи в файл bot.log + в stdout. Без этого утренние ошибки доставки невидимы.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(BASE_DIR, "bot.log"), encoding="utf-8"),
+    ],
+)
+log = logging.getLogger("bot")
 
 GREEN_API_INSTANCE = "7107599042"
 GREEN_API_TOKEN    = "1a6012c4f46348c896f3146282aa2befcdf93f6be2674957b0"
@@ -65,16 +77,16 @@ def send_whatsapp(phone, message):
     try:
         resp = requests.post(url, json=data, timeout=15)
     except Exception as e:
-        print(f"  EXCEPTION -> {phone}: {e}")
+        log.error(f"WhatsApp EXCEPTION -> {phone}: {e}")
         return False, str(e)
     try:
         payload = resp.json()
     except Exception:
-        payload = {"raw": resp.text}
+        payload = {"raw": resp.text[:300]}
     if resp.status_code != 200 or not payload.get("idMessage"):
-        print(f"  FAIL {resp.status_code} -> {phone}: {payload}")
+        log.error(f"WhatsApp FAIL {resp.status_code} -> {phone}: {payload}")
         return False, f"HTTP {resp.status_code}: {payload}"
-    print(f"  OK -> {phone}: idMessage={payload['idMessage']}")
+    log.info(f"WhatsApp OK -> {phone}: idMessage={payload['idMessage']}")
     return True, payload["idMessage"]
 
 # ---------- Логика «клиент ответил сегодня?» ----------
@@ -89,7 +101,7 @@ def get_phones_with_response_today(book):
     try:
         all_rows = msgs.get_all_values()
     except Exception as e:
-        print(f"  WARN: не удалось прочитать messages: {e}")
+        log.warning(f": не удалось прочитать messages: {e}")
         return set()
     if len(all_rows) < 2:
         return set()
@@ -112,7 +124,7 @@ def send_reminders(mode):
     today = datetime.today().strftime("%Y-%m-%d")
     today_dm = datetime.today().strftime("%d.%m.%Y")
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
-    print(f"\nНапоминания [{mode}] [{today}] {now}")
+    log.info(f"=== Напоминания [{mode}] [{today}] {now} ===")
 
     book = _gs_book()
     sheet = book.sheet1
@@ -120,7 +132,7 @@ def send_reminders(mode):
 
     responded = get_phones_with_response_today(book) if mode == "second" else set()
     if mode == "second":
-        print(f"  ответили сегодня: {len(responded)} клиент(ов)")
+        log.info(f"  ответили сегодня: {len(responded)} клиент(ов)")
 
     sent = skipped_responded = skipped_no_first = 0
 
@@ -136,37 +148,37 @@ def send_reminders(mode):
             continue
 
         if mode == "first":
-            print(f"-> 1-е: {row[0]} ({phone})")
+            log.info(f"-> 1-е: {row[0]} ({phone})")
             ok, info = send_whatsapp(phone, REMINDER_MESSAGES["first"])
             if ok:
                 sheet.update_cell(i, 6, now)
                 sent += 1
             else:
-                print(f"   НЕ отправлено: {info}")
+                log.error(f"   НЕ отправлено: {info}")
 
         elif mode == "second":
             # 2-е шлём только если клиент ничего не написал сегодня
             # и при этом 1-е сегодня уже было отправлено (иначе нелогично)
             if phone in responded:
-                print(f"   пропуск (ответил): {row[0]} ({phone})")
+                log.info(f"   пропуск (ответил): {row[0]} ({phone})")
                 skipped_responded += 1
                 continue
             if not last_sent.startswith(today_dm):
-                print(f"   пропуск (1-е сегодня не отправлялось): {row[0]} ({phone})")
+                log.info(f"   пропуск (1-е сегодня не отправлялось): {row[0]} ({phone})")
                 skipped_no_first += 1
                 continue
-            print(f"-> 2-е: {row[0]} ({phone})")
+            log.info(f"-> 2-е: {row[0]} ({phone})")
             ok, info = send_whatsapp(phone, REMINDER_MESSAGES["second"])
             if ok:
                 sheet.update_cell(i, 6, now)
                 sent += 1
             else:
-                print(f"   НЕ отправлено: {info}")
+                log.error(f"   НЕ отправлено: {info}")
 
-    print(f"\nОтправлено: {sent}")
+    log.info(f"=== Итог режима {mode}: отправлено {sent} ===")
     if mode == "second":
-        print(f"Пропущено (ответил): {skipped_responded}")
-        print(f"Пропущено (1-е не было): {skipped_no_first}")
+        log.info(f"Пропущено (ответил): {skipped_responded}")
+        log.info(f"Пропущено (1-е не было): {skipped_no_first}")
 
 def detect_mode():
     """Если режим не задан — определяем по времени суток."""

@@ -125,7 +125,8 @@ HTML = """
   .card-actions + .card-actions { margin-top:8px; }
   .btn { flex:1; border:none; border-radius:10px; padding:11px; font-size:13px; font-weight:700; cursor:pointer; font-family:'Manrope',sans-serif; transition:opacity 0.15s; }
   .btn:active { opacity:0.7; }
-  .btn-pay { background:#44ff88; color:#000; }
+  .btn-pay { background:#44ff88; color:#000; padding:9px 4px; font-size:13px; }
+  .btn-write { background:#1a2a1a; color:#88ddaa; border:1px solid #2a4a2a; padding:9px 4px; font-size:13px; }
   .btn-remind { background:#1e1e1e; color:#fff; border:1px solid #333; padding:9px 4px; font-size:12px; }
   .btn-link { background:#13243a; color:#7ab8ff; border:1px solid #1e3a5f; padding:9px 4px; font-size:12px; }
   .btn-dismiss { background:transparent; color:#666; border:1px solid #2a2a2a; padding:6px 10px; font-size:11px; border-radius:8px; font-weight:600; cursor:pointer; font-family:'Manrope',sans-serif; }
@@ -234,6 +235,7 @@ function render() {
       sentHtml +
       '<div class="card-actions">' +
         '<button class="btn btn-pay" onclick="markPaid('+c.row+')">✓ Оплатил</button>' +
+        '<button class="btn btn-write" onclick="writeMessage(\\''+c.phone+'\\')" title="Написать или записать голос">💬 Написать</button>' +
       '</div>' +
       '<div class="card-actions">' +
         '<button class="btn btn-remind" onclick="sendRemind(event,'+c.row+',1)" title="1-е напоминание">📤 1-е</button>' +
@@ -336,6 +338,11 @@ async function load() {
 
   render();
   loadMessages();
+}
+
+function writeMessage(phone) {
+  if (!phone) return;
+  window.location = '/chat?phone=' + encodeURIComponent(phone);
 }
 
 async function markPaid(row) {
@@ -567,10 +574,14 @@ HTML_CHAT = """
   .bubble.out { background:#13243a; border:1px solid #1e3a5f; color:#cfe1ff; align-self:flex-end; border-top-right-radius:4px; }
   .bubble-time { display:block; font-size:10px; color:#666; margin-top:4px; }
   .bubble-img { max-width:200px; max-height:200px; border-radius:8px; border:1px solid #222; object-fit:cover; display:block; margin-top:6px; }
-  .reply-bar { position:fixed; bottom:0; left:0; right:0; background:#0a0a0a; border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; }
+  .reply-bar { position:fixed; bottom:0; left:0; right:0; background:#0a0a0a; border-top:1px solid #1a1a1a; padding:10px 14px; display:flex; gap:8px; align-items:flex-end; }
   .reply-bar textarea { flex:1; background:#141414; border:1px solid #2a2a2a; border-radius:12px; padding:10px 12px; color:#fff; font-size:14px; font-family:'Manrope',sans-serif; resize:none; max-height:120px; }
   .send-btn { background:#44ff88; color:#000; border:none; border-radius:12px; padding:10px 18px; font-size:14px; font-weight:700; cursor:pointer; font-family:'Manrope',sans-serif; }
   .send-btn:disabled { opacity:0.5; cursor:not-allowed; }
+  .voice-btn { background:#1a1a1a; border:1px solid #2a2a2a; color:#fff; border-radius:12px; padding:10px 14px; font-size:18px; cursor:pointer; font-family:'Manrope',sans-serif; height:42px; }
+  .voice-btn.recording { background:#ff4444; border-color:#ff4444; color:#fff; animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+  .rec-time { font-size:12px; color:#ff4444; margin-right:6px; align-self:center; font-weight:700; }
   .toast { position:fixed; bottom:80px; left:50%; transform:translateX(-50%); background:#44ff88; color:#000; padding:12px 24px; border-radius:30px; font-weight:700; font-size:14px; display:none; z-index:100; }
   .toast.show { display:block; }
   .toast.error { background:#ff4444; color:#fff; }
@@ -600,6 +611,8 @@ HTML_CHAT = """
   </div>
   <div class="chat-msgs" id="chat-msgs"><div class="empty">Загрузка...</div></div>
   <div class="reply-bar">
+    <span class="rec-time" id="rec-time" style="display:none;">00:00</span>
+    <button class="voice-btn" id="voice-btn" onclick="toggleRecording()" title="Записать голосовое">🎤</button>
     <textarea id="reply-text" rows="1" placeholder="Сообщение..." oninput="autoResize(this)"></textarea>
     <button class="send-btn" id="send-btn" onclick="sendReply()">Отправить</button>
   </div>
@@ -746,6 +759,103 @@ document.getElementById('reply-text').addEventListener('keydown', (e) => {
     sendReply();
   }
 });
+
+// ---------- Голосовая запись ----------
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+let recStartTs = 0;
+let recTimer = null;
+
+async function toggleRecording() {
+  const btn = document.getElementById('voice-btn');
+  const timer = document.getElementById('rec-time');
+  if (isRecording) {
+    // Стоп — отправляем
+    try { mediaRecorder.stop(); } catch (e) {}
+    return;
+  }
+  if (!currentPhone) { showToast('Сначала открой чат с клиентом', true); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast('Микрофон не поддерживается в этом браузере', true); return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: true});
+  } catch (e) {
+    showToast('Нет доступа к микрофону: ' + e.message, true); return;
+  }
+  // Подбираем поддерживаемый формат
+  let mime = 'audio/webm;codecs=opus';
+  if (typeof MediaRecorder.isTypeSupported === 'function') {
+    if (!MediaRecorder.isTypeSupported(mime)) {
+      mime = MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : '';
+    }
+  }
+  try {
+    mediaRecorder = mime ? new MediaRecorder(stream, {mimeType: mime}) : new MediaRecorder(stream);
+  } catch (e) {
+    mediaRecorder = new MediaRecorder(stream);
+  }
+  audioChunks = [];
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.onstop = async () => {
+    isRecording = false;
+    btn.textContent = '🎤';
+    btn.classList.remove('recording');
+    timer.style.display = 'none';
+    clearInterval(recTimer);
+    stream.getTracks().forEach(t => t.stop());
+    if (!audioChunks.length) { showToast('Пустая запись', true); return; }
+    const blobType = (mediaRecorder.mimeType || 'audio/webm').split(';')[0];
+    const blob = new Blob(audioChunks, {type: blobType});
+    await sendVoice(blob, blobType);
+  };
+  mediaRecorder.start();
+  isRecording = true;
+  recStartTs = Date.now();
+  btn.textContent = '⏹';
+  btn.classList.add('recording');
+  timer.style.display = 'inline';
+  timer.textContent = '00:00';
+  recTimer = setInterval(() => {
+    const sec = Math.floor((Date.now() - recStartTs) / 1000);
+    const m = String(Math.floor(sec/60)).padStart(2,'0');
+    const s = String(sec%60).padStart(2,'0');
+    timer.textContent = m + ':' + s;
+    if (sec >= 120) { try { mediaRecorder.stop(); } catch (e) {} } // авто-стоп через 2 мин
+  }, 500);
+}
+
+async function sendVoice(blob, blobType) {
+  const fd = new FormData();
+  const ext = blobType.includes('ogg') ? 'ogg' : 'webm';
+  fd.append('audio', blob, 'voice.' + ext);
+  fd.append('mime', blobType);
+  showToast('Отправляю голосовое...');
+  try {
+    const r = await fetch('/api/chat/' + encodeURIComponent(currentPhone) + '/send-voice', {
+      method: 'POST',
+      body: fd
+    });
+    let data = {};
+    try { data = await r.json(); } catch(e) {}
+    if (r.ok && data.status === 'ok') {
+      showToast('✓ Голосовое отправлено');
+      setTimeout(loadHistory, 800);
+    } else {
+      showToast('Ошибка: ' + (data.error || 'неизвестная').toString().slice(0,160), true);
+    }
+  } catch (e) {
+    showToast('Ошибка отправки: ' + e.message, true);
+  }
+}
+
+// Авто-открытие чата если в URL есть ?phone=
+const urlPhone = new URLSearchParams(window.location.search).get('phone');
+if (urlPhone) {
+  setTimeout(() => openChat(urlPhone), 200);
+}
 
 loadContacts();
 // Авто-обновление списка контактов и активного чата
@@ -1163,6 +1273,54 @@ def chat_send(phone):
         log.error(f"store_outgoing_message failed: {e}")
         return jsonify({"status": "ok", "logged": False, "warn": f"отправлено, но не записалось в лог: {e}"})
     return jsonify({"status": "ok", "idMessage": info})
+
+@app.route('/api/chat/<phone>/send-voice', methods=['POST'])
+@login_required
+def chat_send_voice(phone):
+    """Принимаем аудио из браузера и шлём через Green API sendFileByUpload."""
+    audio = request.files.get('audio')
+    if not audio:
+        return jsonify({"status": "error", "error": "нет аудио в запросе"}), 400
+    audio_bytes = audio.read()
+    if not audio_bytes:
+        return jsonify({"status": "error", "error": "пустая запись"}), 400
+    mime = (request.form.get('mime') or audio.mimetype or 'audio/ogg').strip()
+    filename = audio.filename or ('voice.ogg' if 'ogg' in mime else 'voice.webm')
+
+    url = f"https://api.green-api.com/waInstance{GREEN_API_INSTANCE}/sendFileByUpload/{GREEN_API_TOKEN}"
+    files = {'file': (filename, audio_bytes, mime)}
+    data = {'chatId': f"{str(phone).strip()}@c.us"}
+    log.info(f"Voice → {phone}: {len(audio_bytes)} bytes, mime={mime}, file={filename}")
+    try:
+        resp = requests.post(url, data=data, files=files, timeout=30)
+    except Exception as e:
+        log.error(f"Voice EXCEPTION → {phone}: {e}")
+        return jsonify({"status": "error", "error": f"сетевая ошибка: {e}"}), 502
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {"raw": resp.text[:500]}
+    if resp.status_code != 200 or not payload.get("idMessage"):
+        log.error(f"Voice FAIL {resp.status_code} → {phone}: {payload}")
+        return jsonify({"status": "error", "error": f"HTTP {resp.status_code}: {payload}"}), 502
+    log.info(f"Voice OK → {phone}: idMessage={payload['idMessage']}")
+    # Логируем в messages как исходящее
+    try:
+        ws = get_messages_sheet()
+        ws.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            str(phone).strip(),
+            "Я",
+            "voiceMessage",
+            "[голосовое сообщение]",
+            "", "", mime,           # file_url пустой (Green API его нам не возвращает), file_name пустой, mime сохраняем
+            f"{str(phone).strip()}@c.us",
+            "", "",                  # auto_reply_sent_at, resolved_at
+            "out"
+        ])
+    except Exception as e:
+        log.error(f"voice store failed: {e}")
+    return jsonify({"status": "ok", "idMessage": payload["idMessage"]})
 
 @app.route('/api/messages/dismiss/<int:msg_row>', methods=['POST'])
 @login_required
