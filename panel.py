@@ -102,13 +102,30 @@ HTML = """
   .stat.red .stat-num { color:#ff4444; }
   .stat.yellow .stat-num { color:#ffaa44; }
   .stat.green .stat-num { color:#44ff88; }
-  .filter-tabs { display:flex; gap:8px; margin-bottom:16px; overflow-x:auto; padding-bottom:4px; }
+  .filter-tabs { display:flex; gap:6px; margin-bottom:12px; overflow-x:auto; padding-bottom:4px; }
   .filter-tabs::-webkit-scrollbar { display:none; }
-  .tab { border:1px solid #2a2a2a; background:#141414; color:#888; border-radius:20px; padding:6px 14px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; font-family:'Manrope',sans-serif; }
+  .tab { border:1px solid #2a2a2a; background:#141414; color:#888; border-radius:20px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; font-family:'Manrope',sans-serif; }
   .tab.active { background:#fff; color:#000; border-color:#fff; }
-  .cards { display:flex; flex-direction:column; gap:10px; }
+  .tab-count { display:inline-block; margin-left:5px; padding:1px 6px; background:rgba(255,255,255,0.08); border-radius:8px; font-size:10px; }
+  .tab.active .tab-count { background:rgba(0,0,0,0.15); }
+  .search-box { width:100%; background:#141414; border:1px solid #222; border-radius:12px; padding:10px 14px; color:#fff; font-size:14px; font-family:'Manrope',sans-serif; margin-bottom:12px; }
+  .cards { display:flex; flex-direction:column; gap:6px; }
+  /* Старые карточки оставляем для секции "Сообщения от должников" */
   .card { background:#141414; border:1px solid #222; border-radius:14px; padding:16px; transition:all 0.4s ease; overflow:hidden; max-height:1000px; }
   .card.removing { opacity:0; transform:translateX(100px); max-height:0; padding:0; margin:0; }
+  /* Новый компактный список клиентов */
+  .row { background:#141414; border:1px solid #222; border-radius:12px; padding:12px 14px; cursor:pointer; transition:background 0.15s, border-color 0.15s; display:flex; flex-direction:column; gap:4px; }
+  .row:hover { background:#1a1a1a; border-color:#2a2a2a; }
+  .row:active { background:#1f1f1f; }
+  .row-line1 { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+  .row-name { font-size:15px; font-weight:700; word-break:break-word; flex:1; min-width:0; }
+  .row-amount { font-size:14px; font-weight:700; color:#44ff88; white-space:nowrap; }
+  .row-line2 { display:flex; justify-content:space-between; align-items:center; gap:10px; color:#888; font-size:12px; }
+  .row-phone { color:#666; }
+  .row-status.late { color:#ff4444; font-weight:600; }
+  .row-status.today { color:#ffaa44; font-weight:600; }
+  .row-status.future { color:#4488ff; }
+  .row-arrow { color:#444; font-size:14px; }
   .card-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; gap:10px; }
   .card-name { font-size:16px; font-weight:700; word-break:break-word; }
   .card-phone { color:#666; font-size:12px; margin-top:2px; word-break:break-word; }
@@ -164,12 +181,13 @@ HTML = """
 </div>
 
 <div class="filter-tabs">
-  <button class="tab active" onclick="setFilter('urgent',this)">Срочные</button>
-  <button class="tab" onclick="setFilter('today',this)">Сегодня</button>
-  <button class="tab" onclick="setFilter('late',this)">Просрочено</button>
-  <button class="tab" onclick="setFilter('future',this)">Будущие</button>
-  <button class="tab" onclick="setFilter('all',this)">Все</button>
+  <button class="tab" data-filter="all" onclick="setFilter('all',this)">Все<span class="tab-count" id="cnt-tab-all">0</span></button>
+  <button class="tab active" data-filter="today" onclick="setFilter('today',this)">Сегодня<span class="tab-count" id="cnt-tab-today">0</span></button>
+  <button class="tab" data-filter="late30" onclick="setFilter('late30',this)">Просрочка ≤30 дн<span class="tab-count" id="cnt-tab-late30">0</span></button>
+  <button class="tab" data-filter="late_old" onclick="setFilter('late_old',this)">Просрочка >30 дн<span class="tab-count" id="cnt-tab-late_old">0</span></button>
 </div>
+
+<input class="search-box" id="search-box" placeholder="🔍 Поиск по имени или номеру" oninput="render()">
 
 <div class="cards" id="cards"><div class="empty">Загрузка...</div></div>
 
@@ -186,8 +204,8 @@ HTML = """
 <script>
 const today = new Date().toISOString().split('T')[0];
 let allClients = [];
-let currentFilter = 'urgent';
-// Локальный список скрытых сообщений — на случай если сервер ещё не успел распространить запись
+let currentFilter = 'today';
+// Локальный список скрытых сообщений
 const dismissedRows = new Set();
 
 function setFilter(f,el) {
@@ -203,47 +221,80 @@ function getStatus(c) {
   return 'future';
 }
 
-function render() {
-  const filtered = allClients.filter(c => {
-    const s = getStatus(c);
-    if (currentFilter === 'urgent') return s === 'today' || s === 'late';
-    if (currentFilter === 'today') return s === 'today';
-    if (currentFilter === 'late') return s === 'late';
-    if (currentFilter === 'future') return s === 'future';
-    return true;
+function daysOverdue(c) {
+  if (c.date >= today) return 0;
+  const d1 = new Date(today);
+  const d2 = new Date(c.date);
+  return Math.floor((d1 - d2) / 86400000);
+}
+
+function passesTab(c, tab) {
+  const od = daysOverdue(c);
+  if (tab === 'all') return true;
+  if (tab === 'today') return c.date === today;
+  if (tab === 'late30') return od >= 1 && od <= 30;
+  if (tab === 'late_old') return od > 30;
+  return true;
+}
+
+function passesSearch(c, q) {
+  if (!q) return true;
+  q = q.toLowerCase();
+  return (c.name||'').toLowerCase().includes(q) || (c.phone||'').includes(q);
+}
+
+function formatDate(d) {
+  // 2026-04-28 → 28 апр
+  if (!d || d.length < 10) return d || '';
+  const months = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
+  const m = parseInt(d.slice(5,7), 10) - 1;
+  const day = parseInt(d.slice(8,10), 10);
+  return day + ' ' + (months[m] || d.slice(5,7));
+}
+
+function statusText(c) {
+  const od = daysOverdue(c);
+  if (od === 0 && c.date === today) return '● Сегодня';
+  if (od > 0) return '⚠ Просрочено ' + od + ' дн.';
+  // в будущем
+  return formatDate(c.date);
+}
+
+function updateTabCounts() {
+  ['all','today','late30','late_old'].forEach(t => {
+    const cnt = allClients.filter(c => passesTab(c, t)).length;
+    const el = document.getElementById('cnt-tab-' + t);
+    if (el) el.textContent = cnt;
   });
+}
+
+function render() {
+  const q = (document.getElementById('search-box').value || '').trim();
+  const filtered = allClients.filter(c => passesTab(c, currentFilter) && passesSearch(c, q));
 
   const cards = document.getElementById('cards');
   if (!filtered.length) {
-    cards.innerHTML = '<div class="empty">Нет клиентов в этой категории ✓</div>';
+    cards.innerHTML = '<div class="empty">' + (q ? 'Ничего не найдено' : 'Нет клиентов в этой категории') + '</div>';
     return;
   }
 
   cards.innerHTML = filtered.map(c => {
     const s = getStatus(c);
-    const badgeText = s === 'late' ? '⚠ Просрочено' : s === 'today' ? '● Сегодня' : c.date;
-    const sentHtml = c.last_sent ? '<div class="sent-info">📤 Отправлено: <span>' + c.last_sent + '</span></div>' : '';
-    return '<div class="card" id="card-'+c.row+'">' +
-      '<div class="card-top">' +
-        '<div><div class="card-name">'+escapeHtml(c.name||c.phone)+'</div><div class="card-phone">'+escapeHtml(c.phone)+'</div></div>' +
-        '<span class="badge '+s+'">'+escapeHtml(badgeText)+'</span>' +
+    return '<div class="row" onclick="openClient('+c.row+')">' +
+      '<div class="row-line1">' +
+        '<div class="row-name">' + escapeHtml(c.name || c.phone) + '</div>' +
+        (c.amount ? '<div class="row-amount">' + escapeHtml(c.amount) + ' ₽</div>' : '') +
       '</div>' +
-      '<div class="card-info">' +
-        '<div><div class="info-label">Дата</div><div class="info-value">'+escapeHtml(c.date)+'</div></div>' +
-        (c.amount ? '<div><div class="info-label">Сумма</div><div class="info-value">'+escapeHtml(c.amount)+' ₽</div></div>' : '') +
+      '<div class="row-line2">' +
+        '<div class="row-phone">' + escapeHtml(c.phone) + '</div>' +
+        '<div class="row-status '+s+'">' + escapeHtml(statusText(c)) + '</div>' +
       '</div>' +
-      sentHtml +
-      '<div class="card-actions">' +
-        '<button class="btn btn-pay" onclick="markPaid('+c.row+')">✓ Оплатил</button>' +
-        '<button class="btn btn-write" onclick="writeMessage(\\''+c.phone+'\\')" title="Написать или записать голос">💬 Написать</button>' +
-      '</div>' +
-      '<div class="card-actions">' +
-        '<button class="btn btn-remind" onclick="sendRemind(event,'+c.row+',1)" title="1-е напоминание">📤 1-е</button>' +
-        '<button class="btn btn-remind" onclick="sendRemind(event,'+c.row+',2)" title="2-е напоминание">📤 2-е</button>' +
-        '<button class="btn btn-remind" onclick="sendRemind(event,'+c.row+',3)" title="3-е напоминание">📤 3-е</button>' +
-        '<button class="btn btn-link" onclick="sendRemind(event,'+c.row+',4)" title="Отправить ссылку на оплату">💳 Ссылка</button>' +
-      '</div></div>';
+    '</div>';
   }).join('');
+}
+
+function openClient(row) {
+  window.location = '/client/' + row;
 }
 
 function escapeHtml(s) {
@@ -336,6 +387,7 @@ async function load() {
   document.getElementById('cnt-all').textContent = allClients.length;
   document.getElementById('updated').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru');
 
+  updateTabCounts();
   render();
   loadMessages();
 }
@@ -865,6 +917,184 @@ setInterval(() => { if (currentPhone) loadHistory(); else loadContacts(); }, 600
 </html>
 """
 
+HTML_CLIENT = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Клиент</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { font-family:'Manrope',sans-serif; background:#0a0a0a; color:#fff; min-height:100vh; padding:16px; padding-bottom:30px; }
+  .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; gap:10px; }
+  .back-btn { background:#1a1a1a; border:1px solid #2a2a2a; color:#7ab8ff; border-radius:10px; padding:8px 14px; font-size:13px; font-weight:600; text-decoration:none; cursor:pointer; }
+  .info-card { background:#141414; border:1px solid #222; border-radius:14px; padding:18px; margin-bottom:16px; }
+  .name { font-size:22px; font-weight:700; margin-bottom:4px; word-break:break-word; }
+  .phone { color:#888; font-size:14px; margin-bottom:14px; word-break:break-word; }
+  .info-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }
+  .info-block { background:#0a0a0a; border:1px solid #1f1f1f; border-radius:10px; padding:10px 12px; }
+  .info-label { color:#666; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; }
+  .info-value { font-size:15px; font-weight:600; }
+  .info-value.late { color:#ff4444; }
+  .info-value.today { color:#ffaa44; }
+  .info-value.future { color:#4488ff; }
+  .info-value.green { color:#44ff88; }
+  .sent-info { background:#0d1a0d; border:1px solid #1a3a1a; border-radius:10px; padding:10px 12px; font-size:13px; color:#44aa66; }
+  .sent-info span { color:#44ff88; font-weight:700; }
+  .actions { display:flex; flex-direction:column; gap:8px; }
+  .actions-row { display:flex; gap:8px; }
+  .btn { flex:1; border:none; border-radius:12px; padding:14px 12px; font-size:14px; font-weight:700; cursor:pointer; font-family:'Manrope',sans-serif; transition:opacity 0.15s; }
+  .btn:active { opacity:0.7; }
+  .btn:disabled { opacity:0.5; cursor:not-allowed; }
+  .btn-pay { background:#44ff88; color:#000; }
+  .btn-write { background:#1a2a1a; color:#88ddaa; border:1px solid #2a4a2a; }
+  .btn-remind { background:#1e1e1e; color:#fff; border:1px solid #333; }
+  .btn-link { background:#13243a; color:#7ab8ff; border:1px solid #1e3a5f; }
+  .section-title { margin:24px 0 10px; font-size:13px; font-weight:700; color:#888; text-transform:uppercase; letter-spacing:0.5px; }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#44ff88; color:#000; padding:12px 24px; border-radius:30px; font-weight:700; font-size:14px; display:none; z-index:100; max-width:90vw; text-align:center; }
+  .toast.show { display:block; }
+  .toast.error { background:#ff4444; color:#fff; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <a class="back-btn" href="/">← К списку</a>
+  <div style="font-size:12px; color:#666;" id="updated">—</div>
+</div>
+
+<div class="info-card" id="info">
+  <div class="empty" style="text-align:center; padding:40px; color:#444;">Загрузка клиента...</div>
+</div>
+
+<div class="section-title">Действия</div>
+<div class="actions">
+  <button class="btn btn-pay" onclick="markPaid()">✓ Оплатил — перенести на следующий месяц</button>
+  <div class="actions-row">
+    <button class="btn btn-remind" onclick="sendRemind(1)">📤 1-е</button>
+    <button class="btn btn-remind" onclick="sendRemind(2)">📤 2-е</button>
+    <button class="btn btn-remind" onclick="sendRemind(3)">📤 3-е</button>
+  </div>
+  <button class="btn btn-link" onclick="sendRemind(4)">💳 Отправить ссылку на оплату</button>
+  <button class="btn btn-write" onclick="writeMessage()">💬 Написать / голосовое</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const ROW = {{ row }};
+const today = new Date().toISOString().split('T')[0];
+let client = null;
+
+function escapeHtml(s) {
+  return String(s || '')
+    .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+    .replaceAll('"','&quot;').replaceAll("'",'&#039;');
+}
+
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.toggle('error', !!isError);
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+function statusInfo(date) {
+  if (!date) return {cls:'', text:'—'};
+  if (date === today) return {cls:'today', text:'Сегодня'};
+  if (date < today) {
+    const days = Math.floor((new Date(today) - new Date(date)) / 86400000);
+    return {cls:'late', text:'Просрочено ' + days + ' дн.'};
+  }
+  return {cls:'future', text:'Срок: ' + date};
+}
+
+async function load() {
+  const r = await fetch('/api/client/' + ROW);
+  if (!r.ok) {
+    document.getElementById('info').innerHTML = '<div style="text-align:center; padding:40px; color:#ff4444;">Клиент не найден (строка ' + ROW + ')</div>';
+    return;
+  }
+  client = await r.json();
+  document.getElementById('updated').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru');
+
+  const st = statusInfo(client.date);
+  const sentHtml = client.last_sent
+    ? '<div class="sent-info">📤 Последнее сообщение: <span>' + escapeHtml(client.last_sent) + '</span></div>'
+    : '';
+
+  document.getElementById('info').innerHTML =
+    '<div class="name">' + escapeHtml(client.name || client.phone) + '</div>' +
+    '<div class="phone">' + escapeHtml(client.phone) + '</div>' +
+    '<div class="info-grid">' +
+      '<div class="info-block"><div class="info-label">Сумма</div><div class="info-value green">' + escapeHtml(client.amount || '—') + (client.amount ? ' ₽' : '') + '</div></div>' +
+      '<div class="info-block"><div class="info-label">Дата платежа</div><div class="info-value '+st.cls+'">' + escapeHtml(client.date || '—') + '</div></div>' +
+    '</div>' +
+    '<div class="info-block" style="margin-bottom:0;"><div class="info-label">Статус</div><div class="info-value '+st.cls+'">' + escapeHtml(st.text) + '</div></div>' +
+    (sentHtml ? '<div style="margin-top:12px;">' + sentHtml + '</div>' : '');
+}
+
+async function markPaid() {
+  if (!client) return;
+  if (!confirm('Отметить оплату от ' + (client.name || client.phone) + ' и перенести дату на следующий месяц?')) return;
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const r = await fetch('/api/paid/' + ROW, {method:'POST'});
+    if (r.ok) {
+      showToast('✓ Оплата отмечена. Через 1 секунду вернёмся к списку');
+      setTimeout(() => { window.location = '/'; }, 1200);
+    } else {
+      showToast('Ошибка', true);
+      btn.disabled = false;
+      btn.textContent = '✓ Оплатил — перенести на следующий месяц';
+    }
+  } catch (e) {
+    showToast('Ошибка: ' + e.message, true);
+    btn.disabled = false;
+    btn.textContent = '✓ Оплатил — перенести на следующий месяц';
+  }
+}
+
+async function sendRemind(level) {
+  const btn = event.target;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const r = await fetch('/api/remind/' + ROW + '?level=' + level, {method:'POST'});
+    let data = {};
+    try { data = await r.json(); } catch(e) {}
+    if (r.ok && data.status === 'ok') {
+      showToast('📤 ' + (level === 4 ? 'Ссылка' : 'Напоминание #' + level) + ' отправлено');
+      setTimeout(load, 800);
+    } else {
+      const err = String(data.error || 'неизвестная ошибка').slice(0, 220);
+      showToast('❌ Не отправилось: ' + err, true);
+    }
+  } catch (e) {
+    showToast('Ошибка: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+function writeMessage() {
+  if (!client) return;
+  window.location = '/chat?phone=' + encodeURIComponent(client.phone);
+}
+
+load();
+</script>
+</body>
+</html>
+"""
+
 # ============================================================
 # УТИЛИТЫ
 # ============================================================
@@ -1118,6 +1348,29 @@ def messages_page():
 @login_required
 def chat_page():
     return render_template_string(HTML_CHAT)
+
+@app.route('/client/<int:row>')
+@login_required
+def client_page(row):
+    return render_template_string(HTML_CLIENT, row=row)
+
+@app.route('/api/client/<int:row>')
+@login_required
+def get_client_by_row(row):
+    """Один клиент по номеру строки."""
+    sheet = get_sheet()
+    r = sheet.row_values(row)
+    if len(r) < 2 or not r[1]:
+        return jsonify({"status": "error", "error": "клиент не найден"}), 404
+    return jsonify({
+        "row": row,
+        "name": r[0] if len(r) > 0 else "",
+        "phone": r[1] if len(r) > 1 else "",
+        "amount": r[2] if len(r) > 2 else "",
+        "date": r[3] if len(r) > 3 else "",
+        "status": r[4] if len(r) > 4 else "",
+        "last_sent": r[5] if len(r) > 5 else "",
+    })
 
 @app.route('/api/clients')
 @login_required
